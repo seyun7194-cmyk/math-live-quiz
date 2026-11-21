@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>비례의 전설 · 학생</title>
+<link rel="icon" href="images/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Jua&family=Fredoka:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>
+<script src="config.js"></script>
+<script src="common.js"></script>
+</head>
+<body>
+<main id="view" class="stu"></main>
+<div id="conn" class="conn-chip hidden">자동 새로고침 중</div>
+
+<script>
+(function () {
+  'use strict';
+  const { h, clear, $, rpc, sb } = App;
+  const session = App.store('session', 'pl_student');   // 탭마다 다른 학생
+
+  const S = {
+    me: null,        // { playerId, roomId, token, nickname, animal, code }
+    room: null, view: null, q: null, busy: false, score: 0, solved: 0,
+    stopWatch: null, tickTimer: null, endTimer: null
+  };
+
+  // ---------------- 시작 ----------------
+  async function init() {
+    if (App.configWarning()) return;
+    await App.syncTime();
+    setInterval(App.syncTime, 60000);
+    const s = session.get();
+    if (s && s.token && s.playerId) {
+      S.me = s;
+      const ok = await loadMe().catch(() => false);
+      if (ok) { attach(); return; }
+      session.clear(); S.me = null;
+    }
+    showJoin();
+  }
+
+  async function loadMe() {
+    const [{ data: room }, { data: me }] = await Promise.all([
+      sb.from('rooms').select('*').eq('id', S.me.roomId).maybeSingle(),
+      sb.from('players').select('*').eq('id', S.me.playerId).maybeSingle()
+    ]);
+    if (!room || !me) return false;
+    S.room = room; S.score = me.score; S.solved = me.solved;
+    return true;
+  }
+
+  async function reloadRoom() {
+    const { data: room, error } = await sb.from('rooms').select('*').eq('id', S.me.roomId).maybeSingle();
+    if (error) throw error;
+    if (!room) { roomGone(); return; }
+    const prev = S.room && S.room.status;
+    S.room = room;
+    if (prev !== room.status) route();
+  }
+
+  function attach() {
+    if (S.stopWatch) S.stopWatch();
+    // 학생 화면은 방(rooms) 알림만 받는다 (PRD 9절 용량)
+    S.stopWatch = App.watch({
+      name: 'student-' + S.me.playerId,
+      subs: [{ table: 'rooms', filter: 'id=eq.' + S.me.roomId, cb: (pl) => {
+        if (pl.eventType === 'DELETE') { roomGone(); return; }
+        const prev = S.room && S.room.status; S.room = pl.new;
+        if (prev !== S.room.status) route();
+      } }],
+      reload: reloadRoom,
+      onMode: (m) => $('#conn').classList.toggle('hidden', m !== 'poll')
+    });
+    clearInterval(S.tickTimer);
+    S.tickTimer = setInterval(tick, 250);
+    route();
+  }
+
+  function detach() {
+    if (S.stopWatch) S.stopWatch();
+    S.stopWatch = null; clearInterval(S.tickTimer); clearInterval(S.endTimer);
+    $('#conn').classList.add('hidden');
+  }
+
+  function remaining() { return S.room && S.room.ends_at ? App.ms(S.room.ends_at) - App.now() : 0; }
+  function isOver() { return S.room && (S.room.status === 'ended' || (S.room.status === 'playing' && remaining() <= 0)); }
+
+  function route() {
+    if (!S.room) return;
+    if (isOver()) showEnd();
+    else if (S.room.status === 'waiting') showWait();
+    else if (S.room.status === 'playing') showPlay();
+  }
+
+  function roomGone() {
+    detach(); session.clear(); S.me = null; S.room = null;
+    showJoin('선생님이 방을 지웠어요. 새 방 번호로 다시 들어와 주세요.');
+  }
+
+  // ---------------- 입장 ----------------
+  function showJoin(message) {
+    S.view = 'join';
+    const view = clear($('#view'));
+    const code = new URLSearchParams(location.search).get('code') || '';
+    const err = h('p', { class: 'form-error', role: 'alert', text: message || '' });
+    const animals = h('div', { class: 'animals', role: 'radiogroup', 'aria-label': '동물 고르기' },
+      App.ANIMALS.map((a, i) => h('div', { class: 'animal-opt' },
+        h('input', { type: 'radio', name: 'animal', id: 'an-' + a.id, value: a.id, checked: i === 0 }),
+        h('label', { for: 'an-' + a.id }, App.avatar(a.id, 46), h('span', { text: a.name })))));
+    const btn = h('button', { class: 'btn btn-primary btn-block', type: 'submit' }, '들어가기');
+    const form = h('form', { class: 'stu-card glass', novalidate: true },
+      h('div', { class: 'field' },
+        h('label', { for: 'code', text: '방 번호' }),
+        h('input', { id: 'code', class: 'input code', inputmode: 'numeric', maxlength: '4', autocomplete: 'off', value: code.replace(/\D/g, '').slice(0, 4) })),
+      h('div', { class: 'field' },
+        h('label', { for: 'nick', text: '별명 (1~10자)' }),
+        h('input', { id: 'nick', class: 'input', maxlength: '10', autocomplete: 'off', placeholder: '예: 번개토끼' })),
+      h('div', { class: 'field' }, h('span', { class: 'label', text: '나의 동물' }), animals),
+      h('div', { class: 'notice' },
+        h('span', { text: '실명 대신 별명도 좋아요. 이름, 번호, 연락처는 쓰지 않아요.' }),
+        h('span', { text: '같은 방 친구들에게 내 별명과 점수가 보여요. 기록은 수업이 끝나면 지워져요.' })),
+      err, btn);
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const c = $('#code').value.replace(/\D/g, '');
+      const nick = $('#nick').value.trim();
+      const animal = form.querySelector('input[name=animal]:checked').value;
+      err.textContent = '';
+      if (c.length !== 4) { err.textContent = '방 번호 4자리를 넣어 주세요.'; return; }
+      if (!nick || nick.length > 10) { err.textContent = '별명은 1~10자로 써 주세요.'; return; }
+      if (/[0-9]{4}/.test(nick)) { err.textContent = '숫자를 4개 넘게 이어 쓸 수 없어요. 별명을 써 주세요.'; return; }
+      btn.disabled = true;
+      try {
+        const r = await rpc('join_room', { p_code: c, p_nickname: nick, p_animal: animal });
+        S.me = { playerId: r.player_id, roomId: r.room_id, token: r.token, nickname: nick, animal, code: c };
+        session.set(S.me);
+        await loadMe();
+        attach();
+      } catch (ex) { err.textContent = ex.message; btn.disabled = false; }
+    });
+    view.appendChild(h('h1', { class: 'stu-title', text: '비례의 전설' }));
+    view.appendChild(form);
+    if (!code) setTimeout(() => $('#code') && $('#code').focus(), 50);
+    else setTimeout(() => $('#nick') && $('#nick').focus(), 50);
+  }
+
+  function topbar() {
+    return h('div', { class: 'topbar glass' }, App.avatar(S.me.animal, 40),
+      h('span', { class: 'name', text: S.me.nickname }),
+      h('span', { id: 'score', class: 'pill', text: S.score + '점' }));
+  }
+
+  // ---------------- 기다리기 ----------------
+  function showWait() {
+    S.view = 'wait';
+    const view = clear($('#view'));
+    const again = h('button', { class: 'btn btn-ghost', type: 'button' }, '다른 이름으로 다시 들어가기');
+    again.addEventListener('click', () => { detach(); session.clear(); S.me = null; showJoin(); });
+    view.appendChild(h('h1', { class: 'stu-title', text: '비례의 전설' }));
+    view.appendChild(h('div', { class: 'wait-card glass' },
+      App.avatar(S.me.animal, 96),
+      h('div', { class: 'name', text: S.me.nickname }),
+      h('p', { style: 'margin:0;font-size:19px;color:var(--ink-2);line-height:1.5', text: '선생님이 시작하면 바로 문제가 나와요!' }),
+      h('span', { class: 'chip', text: '방 ' + (S.me.code || '') })));
+    view.appendChild(h('div', { class: 'spacer' }));
+    view.appendChild(again);
+  }
+
+  // ---------------- 문제 풀기 ----------------
+  async function showPlay() {
+    S.view = 'play';
+    const view = clear($('#view'));
+    view.appendChild(topbar());
+    view.appendChild(h('div', { id: 'golden', class: 'golden-strip hidden', role: 'status' },
+      h('span', { text: '골든 타임! 정답은 2점' }), h('span', { id: 'golden-left', class: 'num' })));
+    view.appendChild(h('div', { class: 'progress-row' },
+      h('div', { class: 'progress-meta' }, h('span', { id: 'qno', text: '문제 ' + (S.solved + 1) }), h('span', { id: 'time', class: 'num', text: '--:--' })),
+      h('div', { class: 'track', 'aria-hidden': 'true' }, h('div', { id: 'track', style: 'width:100%' }))));
+    view.appendChild(h('section', { id: 'qcard', class: 'q-card glass', 'aria-live': 'polite' }, h('p', { class: 'empty', text: '문제를 가져오는 중…' })));
+    view.appendChild(h('div', { class: 'spacer' }));
+    view.appendChild(h('div', { id: 'feedback', class: 'feedback hidden', role: 'status', 'aria-live': 'assertive' }));
+    view.appendChild(h('div', { id: 'choices', class: 'choices' }));
+    tick();
+    if (!S.q) {
+      try {
+        const r = await rpc('next_question', { p_token: S.me.token });
+        if (r.status === 'ended') { showEnd(); return; }
+        if (r.status === 'waiting') { showWait(); return; }
+        S.q = r.question;
+      } catch (ex) { handleError(ex); return; }
+    }
+    renderQuestion();
+  }
+
+  function renderQuestion() {
+    const q = S.q; if (!q || S.view !== 'play') return;
+    $('#qno').textContent = '문제 ' + (S.solved + 1);
+    const card = clear($('#qcard'));
+    card.appendChild(h('span', { class: 'chip', text: App.TYPE_NAMES[q.type] || '문제' }));
+    const vis = App.renderVisual(q.visual);
+    if (vis) card.appendChild(vis);
+    card.appendChild(App.mathEl('div', 'q-text', App.questionBody(q.question, q.visual)));
+    const fb = $('#feedback'); fb.className = 'feedback hidden'; clear(fb);
+    const box = clear($('#choices'));
+    const ox = q.choices.length === 2;
+    q.choices.forEach((c, i) => {
+      const b = h('button', { type: 'button', class: `choice c${i}${ox ? ' ox' : ''}${c.length > 9 ? ' long' : ''}` });
+      App.renderMath(b, c);
+      if (ox) b.setAttribute('aria-label', c === 'O' ? 'O, 맞아요' : 'X, 틀려요');
+      b.addEventListener('click', () => answer(i, b));
+      box.appendChild(b);
+    });
+    S.busy = false;
+  }
+
+  function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  async function answer(idx, btn) {
+    if (S.busy || !S.q) return;
+    S.busy = true;
+    const buttons = [...document.querySelectorAll('.choice')];
+    buttons.forEach(b => b.disabled = true);
+    let r;
+    try {
+      r = await rpc('submit_answer', { p_token: S.me.token, p_no: S.q.no, p_choice: idx });
+    } catch (ex) { buttons.forEach(b => b.disabled = false); S.busy = false; handleError(ex); return; }
+    if (r.status === 'ended') { showEnd(); return; }
+    if (r.error === 'STALE') { S.q = r.question; renderQuestion(); return; }
+    if (r.error === 'LOCKED') { await wait(r.wait_ms || 1000); buttons.forEach(b => b.disabled = false); S.busy = false; return; }
+
+    const fb = $('#feedback'); clear(fb);
+    buttons[r.correct_choice] && buttons[r.correct_choice].classList.add('correct');
+    if (r.correct) {
+      fb.className = 'feedback ok';
+      fb.appendChild(h('span', { class: 'plus', text: '+' + r.points }));
+      fb.appendChild(h('span', { text: r.points === 2 ? '골든 타임 정답!' : '정답이에요!' }));
+    } else {
+      btn.classList.add('wrong');
+      fb.className = 'feedback no';
+      fb.appendChild(App.mathEl('span', '', '힌트: ' + (r.hint || '정답을 확인해 보세요.')));
+    }
+    S.score = r.score; S.solved += 1;
+    $('#score').textContent = S.score + '점';
+    await wait(r.correct ? 700 : 1100);
+    if (r.bonus > 0) await showBox(r.bonus);
+    S.q = r.next;
+    if (isOver()) { showEnd(); return; }
+    renderQuestion();
+  }
+
+  function showBox(n) {
+    return new Promise(resolve => {
+      const ov = h('div', { class: 'box-overlay', role: 'alert' },
+        h('div', { class: 'box-card glass' },
+          h('span', { style: 'font-size:22px', text: '미스터리 상자가 열렸어요!' }),
+          h('span', { class: 'big', text: '+' + n }),
+          h('span', { style: 'font-size:16px;color:var(--ink-2)', text: '보너스 점수' })));
+      document.body.appendChild(ov);
+      if (window.confetti && !App.reducedMotion) confetti({ particleCount: 90, spread: 75, origin: { y: 0.45 }, disableForReducedMotion: true });
+      setTimeout(() => { ov.remove(); resolve(); }, 1600);
+    });
+  }
+
+  function handleError(ex) {
+    if (ex.code === 'BAD_TOKEN') { roomGone(); return; }
+    App.toast(ex.message);
+  }
+
+  function tick() {
+    if (!S.room) return;
+    if (S.view === 'play') {
+      const left = remaining(), total = S.room.duration_sec * 1000;
+      const t = $('#time'); if (t) t.textContent = App.mmss(left);
+      const tr = $('#track'); if (tr) tr.style.width = Math.max(0, Math.min(100, left / total * 100)) + '%';
+      const g = S.room.golden_until ? App.ms(S.room.golden_until) - App.now() : 0;
+      const gs = $('#golden');
+      if (gs) { gs.classList.toggle('hidden', g <= 0); if (g > 0) $('#golden-left').textContent = App.mmss(g).slice(1); }
+      if (left <= 0 && !S.busy) showEnd();
+    }
+  }
+
+  // ---------------- 게임 끝 ----------------
+  function showEnd() {
+    if (S.view === 'end') return;
+    S.view = 'end'; S.q = null;
+    const view = clear($('#view'));
+    view.appendChild(topbar());
+    view.appendChild(h('section', { id: 'end', class: 'wait-card glass' }, h('p', { class: 'empty', text: '최종 순위를 모으는 중…' })));
+    // 마지막 답안이 반영되도록 잠시 기다렸다가, 그 뒤에도 10초마다 맞춘다
+    setTimeout(renderEnd, 1800);
+    clearInterval(S.endTimer);
+    S.endTimer = setInterval(renderEnd, 10000);
+  }
+
+  async function renderEnd() {
+    if (!S.me) return;
+    let players;
+    try { ({ data: players } = await sb.from('players').select('*').eq('room_id', S.me.roomId)); }
+    catch (e) { return; }
+    if (!players || !players.length) { roomGone(); return; }
+    const ranked = App.rankPlayers(players);
+    const me = ranked.find(p => p.id === S.me.playerId);
+    if (!me) { roomGone(); return; }
+    S.score = me.score;
+    const sc = $('#score'); if (sc) sc.textContent = me.score + '점';
+    const box = clear($('#end'));
+    box.appendChild(h('div', { class: 'end-rank' }, String(me.rank), h('small', { text: '등' })));
+    box.appendChild(h('div', { style: 'font-size:22px' }, h('span', { class: 'num', text: me.score }), '점'));
+    box.appendChild(h('div', { style: 'color:var(--ink-2);font-size:17px', text: `맞힌 문제 ${me.correct}개 · 보너스 +${me.bonus}` }));
+    box.appendChild(h('h2', { style: 'margin:8px 0 0;font-size:20px;font-weight:400;align-self:stretch;text-align:left', text: 'TOP 5' }));
+    box.appendChild(h('ul', { class: 'top5', style: 'align-self:stretch' }, ranked.slice(0, 5).map(p =>
+      h('li', { class: p.id === me.id ? 'me' : '' },
+        h('span', { class: 'r', text: p.rank }), App.avatar(p.animal, 32),
+        h('span', { class: 'n', text: p.nickname }), h('span', { class: 'num', text: p.score + '점' })))));
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

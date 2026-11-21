@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>비례의 전설</title>
+<link rel="icon" href="images/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Jua&family=Fredoka:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="home">
+  <div>
+    <h1>비례의 전설</h1>
+    <p class="sub">6-2 수학 4단원 「비례식과 비례배분」 실시간 복습 퀴즈</p>
+  </div>
+  <div class="home-grid">
+    <section class="home-card glass">
+      <h2>선생님</h2>
+      <p>난이도와 게임 시간을 고르고 방을 만들어요. 화면에 나오는 QR 코드로 학생이 들어와요.</p>
+      <a class="btn btn-primary" href="teacher.html">방 만들기</a>
+    </section>
+    <section class="home-card glass">
+      <h2>학생</h2>
+      <p>선생님 화면의 방 번호 4자리를 넣어 주세요.</p>
+      <form id="go" class="field">
+        <label for="code">방 번호</label>
+        <input id="code" class="input code" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" required>
+        <button class="btn" type="submit">들어가기</button>
+      </form>
+    </section>
+  </div>
+</main>
+<script>
+  document.getElementById('go').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var c = document.getElementById('code').value.replace(/\D/g, '').slice(0, 4);
+    if (c.length === 4) location.href = 'student.html?code=' + c;
+  });
+</script>
+</body>
+</html>
